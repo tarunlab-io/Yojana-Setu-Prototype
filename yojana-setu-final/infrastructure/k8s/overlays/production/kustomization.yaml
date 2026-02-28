@@ -1,0 +1,70 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: yojana-setu-prod
+
+bases:
+  - ../../base
+
+# ─── Production-specific patches ─────────────────────────────────────────────
+
+patches:
+  # Scale up replicas for production
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      name: profile-service
+
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      name: application-service
+
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 4
+    target:
+      kind: Deployment
+      name: whatsapp-service
+
+  # Tighten resource limits for production
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+    target:
+      kind: Deployment
+      name: voice-service
+
+# ─── Image tags (updated by CI/CD on each release) ────────────────────────────
+
+images:
+  - name: gcr.io/yojana-setu/profile-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/scheme-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/voice-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/document-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/whatsapp-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/application-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/privacy-service
+    newTag: "1.0.0"
+  - name: gcr.io/yojana-setu/gateway
+    newTag: "1.0.0"
+
+commonLabels:
+  environment: production

@@ -1,0 +1,24 @@
+{
+  "name": "@yojana-setu/integration-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "jest --runInBand --forceExit",
+    "test:journey": "jest --runInBand --forceExit --testPathPattern=user-journey",
+    "test:privacy": "jest --runInBand --forceExit --testPathPattern=privacy-lifecycle",
+    "test:state-machine": "jest --runInBand --forceExit --testPathPattern=application-state-machine",
+    "test:health": "jest --runInBand --forceExit --testPathPattern=service-health"
+  },
+  "dependencies": {
+    "@yojana-setu/shared": "workspace:*",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.25",
+    "@types/pg": "^8.11.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.2"
+  }
+}

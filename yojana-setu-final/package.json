@@ -1,0 +1,39 @@
+{
+  "name": "yojana-setu",
+  "version": "1.0.0",
+  "description": "AI-powered platform for Indian government welfare scheme discovery",
+  "private": true,
+  "packageManager": "pnpm@8.15.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "docker-compose up",
+    "dev:infra": "docker-compose up postgres redis minio minio-init",
+    "test": "pnpm -r --filter '!@yojana-setu/integration-tests' test",
+    "test:unit": "pnpm -r --filter '!@yojana-setu/integration-tests' test:unit",
+    "test:property": "pnpm -r --filter '!@yojana-setu/integration-tests' test:property",
+    "test:integration": "pnpm --filter @yojana-setu/integration-tests test",
+    "test:all": "pnpm -r test",
+    "test:coverage": "pnpm -r --filter '!@yojana-setu/integration-tests' test:coverage",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r clean && rm -rf node_modules",
+    "db:migrate": "psql $DATABASE_URL -f infrastructure/db/init.sql -f infrastructure/db/schema-extensions.sql",
+    "deploy:staging": "kubectl apply -k infrastructure/k8s/overlays/staging",
+    "deploy:prod": "kubectl apply -k infrastructure/k8s/overlays/production"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.2.5",
+    "typescript": "^5.4.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

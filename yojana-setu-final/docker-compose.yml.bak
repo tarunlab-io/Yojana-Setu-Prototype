@@ -1,0 +1,104 @@
+version: '3.9'
+
+services:
+  # ─── Databases ──────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: yojana-setu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yojana
+      POSTGRES_PASSWORD: yojana_dev_password
+      POSTGRES_DB: yojana_setu
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U yojana -d yojana_setu']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: yojana-setu-redis
+    restart: unless-stopped
+    command: redis-server --requirepass yojana_redis_dev
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--pass', 'yojana_redis_dev', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Object Storage (MinIO = local S3) ──────────────────────────────────────
+
+  minio:
+    image: minio/minio:latest
+    container_name: yojana-setu-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: yojana_minio
+      MINIO_ROOT_PASSWORD: yojana_minio_dev_password
+    ports:
+      - '9000:9000'   # S3 API
+      - '9001:9001'   # Web Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ─── Services ───────────────────────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.service
+      args:
+        SERVICE_NAME: gateway
+    container_name: yojana-setu-gateway
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=postgresql://yojana:yojana_dev_password@postgres:5432/yojana_setu
+      - REDIS_URL=redis://:yojana_redis_dev@redis:6379
+      - S3_BUCKET_NAME=yojana-setu-documents
+      - S3_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=yojana_minio
+      - AWS_SECRET_ACCESS_KEY=yojana_minio_dev_password
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./packages:/app/packages
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/v1/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  default:
+    name: yojana-setu-network

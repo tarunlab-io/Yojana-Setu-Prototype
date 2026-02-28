@@ -1,0 +1,140 @@
+---
+# ─── Deployment ───────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: application-service
+  labels:
+    app: application-service
+    app.kubernetes.io/name: application-service
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: application-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0          # Zero-downtime deployments
+  template:
+    metadata:
+      labels:
+        app: application-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3006"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: yojana-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: application-service
+          image: gcr.io/yojana-setu/application-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3006
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3006"
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: yojana-db-credentials
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: yojana-redis-credentials
+                  key: url
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: yojana-encryption-keys
+                  key: encryption-key
+            - name: MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: yojana-encryption-keys
+                  key: master-key
+            - name: WHATSAPP_SERVICE_URL
+              value: http://whatsapp-service:3005
+            - name: UMANG_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: yojana-external-apis
+                  key: umang-api-key
+                  optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3006
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3006
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Allow in-flight requests to complete before shutdown
+                command: ["/bin/sh", "-c", "sleep 5"]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: application-service
+
+---
+# ─── Service ──────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: application-service
+  labels:
+    app: application-service
+spec:
+  selector:
+    app: application-service
+  ports:
+    - name: http
+      port: 3006
+      targetPort: 3006
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ─── PodDisruptionBudget ──────────────────────────────────────────────────────
+# Ensures at least 1 replica is always available during node maintenance
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: application-service-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: application-service

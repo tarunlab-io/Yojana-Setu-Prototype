@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: yojana-setu
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - services/profile-service.yaml
+  - services/scheme-service.yaml
+  - services/voice-service.yaml
+  - services/document-service.yaml
+  - services/whatsapp-service.yaml
+  - services/application-service.yaml
+  - services/privacy-service.yaml
+  - services/gateway.yaml
+  - hpa.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: yojana-setu
+  app.kubernetes.io/managed-by: kustomize

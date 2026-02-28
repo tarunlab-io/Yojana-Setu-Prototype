@@ -1,0 +1,312 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  REGISTRY: gcr.io
+  PROJECT_ID: yojana-setu
+
+# ─── Jobs ──────────────────────────────────────────────────────────────────────
+
+jobs:
+
+  # ─── 1. Lint & Typecheck (fast gate, runs on every PR) ──────────────────────
+
+  lint-typecheck:
+    name: Lint & TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck all packages
+        run: pnpm -r typecheck
+
+      - name: Lint all packages
+        run: pnpm -r lint
+
+  # ─── 2. Unit Tests ────────────────────────────────────────────────────────────
+
+  unit-tests:
+    name: Unit & Property Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - profile-service
+          - scheme-service
+          - voice-service
+          - document-service
+          - whatsapp-service
+          - application-service
+          - privacy-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        run: pnpm --filter @yojana-setu/shared build
+
+      - name: Run tests with coverage
+        run: pnpm --filter @yojana-setu/${{ matrix.package }} test:coverage
+        env:
+          CI: true
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          flags: ${{ matrix.package }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ─── 3. Integration Tests ─────────────────────────────────────────────────────
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: yojana
+          POSTGRES_PASSWORD: yojana_dev_password
+          POSTGRES_DB: yojana_setu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run database migrations
+        run: |
+          PGPASSWORD=yojana_dev_password psql \
+            -h localhost -U yojana -d yojana_setu \
+            -f infrastructure/db/init.sql
+          PGPASSWORD=yojana_dev_password psql \
+            -h localhost -U yojana -d yojana_setu \
+            -f infrastructure/db/schema-extensions.sql
+        env:
+          DATABASE_URL: postgresql://yojana:yojana_dev_password@localhost:5432/yojana_setu
+
+      - name: Build and start all services
+        run: |
+          pnpm -r build
+          # Start each service in background
+          for svc in profile-service scheme-service document-service application-service privacy-service; do
+            PORT=$(node -e "
+              const ports={
+                'profile-service':3001,'scheme-service':3002,
+                'document-service':3004,'application-service':3006,
+                'privacy-service':3007
+              };
+              console.log(ports['$svc']||3000)
+            ")
+            NODE_ENV=test \
+            DATABASE_URL=postgresql://yojana:yojana_dev_password@localhost:5432/yojana_setu \
+            REDIS_URL=redis://localhost:6379 \
+            ENCRYPTION_KEY=test_encryption_key_32_bytes!!!! \
+            MASTER_KEY=test_master_key_32_bytes_here!!!! \
+            PORT=$PORT \
+            node packages/$svc/dist/index.js &
+          done
+          # Wait for services to come up
+          sleep 10
+        env:
+          CI: true
+
+      - name: Run integration tests
+        run: pnpm --filter @yojana-setu/integration-tests test
+        env:
+          CI: true
+          DATABASE_URL: postgresql://yojana:yojana_dev_password@localhost:5432/yojana_setu
+          PROFILE_SERVICE_URL: http://localhost:3001
+          SCHEME_SERVICE_URL: http://localhost:3002
+          DOCUMENT_SERVICE_URL: http://localhost:3004
+          APPLICATION_SERVICE_URL: http://localhost:3006
+          PRIVACY_SERVICE_URL: http://localhost:3007
+
+  # ─── 4. Build & Push Docker Images ──────────────────────────────────────────
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [integration-tests]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'
+    strategy:
+      matrix:
+        service:
+          - profile-service
+          - scheme-service
+          - voice-service
+          - document-service
+          - whatsapp-service
+          - application-service
+          - privacy-service
+          - gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.service
+          build-args: SERVICE_NAME=${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── 5. Deploy to Staging ─────────────────────────────────────────────────────
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: github.ref == 'refs/heads/staging'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: yojana-setu-staging
+          location: asia-south1
+
+      - name: Update image tags in kustomization
+        run: |
+          SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          cd infrastructure/k8s/overlays/staging
+          kustomize edit set image \
+            gcr.io/yojana-setu/profile-service:$SHA \
+            gcr.io/yojana-setu/application-service:$SHA \
+            gcr.io/yojana-setu/privacy-service:$SHA
+
+      - name: Deploy to staging cluster
+        run: |
+          kubectl apply -k infrastructure/k8s/overlays/staging
+          kubectl rollout status deployment -n yojana-setu-staging --timeout=5m
+
+  # ─── 6. Deploy to Production (manual approval required) ──────────────────────
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://api.yojana-setu.gov.in
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_PROD_SA_KEY }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: yojana-setu-production
+          location: asia-south1
+
+      - name: Deploy to production
+        run: |
+          SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          cd infrastructure/k8s/overlays/production
+          kustomize edit set image \
+            gcr.io/yojana-setu/profile-service:$SHA \
+            gcr.io/yojana-setu/application-service:$SHA \
+            gcr.io/yojana-setu/privacy-service:$SHA
+          kubectl apply -k .
+          kubectl rollout status deployment -n yojana-setu-prod --timeout=10m
+
+      - name: Run smoke tests against production
+        run: |
+          # Wait for gateway to be ready, then hit /health on all services
+          sleep 30
+          curl -f https://api.yojana-setu.gov.in/health || exit 1

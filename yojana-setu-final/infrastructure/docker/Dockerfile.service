@@ -1,0 +1,57 @@
+# Multi-stage Dockerfile for any Yojana-Setu service
+# Usage: docker build --build-arg SERVICE_NAME=gateway -t yojana-setu/gateway .
+
+ARG SERVICE_NAME=gateway
+ARG NODE_VERSION=20-alpine
+
+# ─── Stage 1: Install dependencies ───────────────────────────────────────────
+FROM node:${NODE_VERSION} AS deps
+WORKDIR /app
+
+RUN npm install -g pnpm@8.15.0
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/${SERVICE_NAME}/package.json ./packages/${SERVICE_NAME}/
+
+RUN pnpm install --frozen-lockfile
+
+# ─── Stage 2: Build ───────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION} AS builder
+ARG SERVICE_NAME
+WORKDIR /app
+
+RUN npm install -g pnpm@8.15.0
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=deps /app/packages/${SERVICE_NAME}/node_modules ./packages/${SERVICE_NAME}/node_modules
+
+COPY tsconfig.base.json ./
+COPY packages/shared ./packages/shared
+COPY packages/${SERVICE_NAME} ./packages/${SERVICE_NAME}
+
+RUN pnpm --filter @yojana-setu/shared build
+RUN pnpm --filter @yojana-setu/${SERVICE_NAME} build
+
+# ─── Stage 3: Production image ────────────────────────────────────────────────
+FROM node:${NODE_VERSION} AS production
+ARG SERVICE_NAME
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+RUN apk add --no-cache dumb-init
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && adduser -S yojana -u 1001
+
+COPY --from=builder --chown=yojana:nodejs /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder --chown=yojana:nodejs /app/packages/${SERVICE_NAME}/dist ./packages/${SERVICE_NAME}/dist
+COPY --from=deps --chown=yojana:nodejs /app/node_modules ./node_modules
+
+USER yojana
+
+EXPOSE 3000
+
+CMD ["dumb-init", "node", "packages/${SERVICE_NAME}/dist/index.js"]
